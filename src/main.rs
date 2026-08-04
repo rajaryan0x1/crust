@@ -1,6 +1,9 @@
+#[warn(unused_imports)]
 use std::env;
 use std::io::{self, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::fs::metadata;
 
 const BUILTINS: [&str; 3] = ["type", "echo", "exit"];
 
@@ -45,11 +48,16 @@ fn main() {
                             let mut candidate = PathBuf::from(dir);
                             candidate.push(cmd);
 
-                            if candidate.exists() {
-                                println!("{}", candidate.display());
-                                found = true;
-                                break;
+                            if let Ok(metadata) = metadata(&candidate) {
+                                if metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0) {
+                                    println!("{cmd} is {}", candidate.display());
+                                    found = true;
+                                    break;
+
+                                }
+
                             }
+
                         }
 
                         if !found {
