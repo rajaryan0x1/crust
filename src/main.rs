@@ -1,4 +1,6 @@
+use std::env;
 use std::io::{self, Write};
+use std::path::PathBuf;
 
 const BUILTINS: [&str; 3] = ["type", "echo", "exit"];
 
@@ -20,7 +22,7 @@ fn main() {
 
         match parts[0] {
             "exit" => {
-                if parts.len()==1 ||parts.len() == 2 && parts[1] == "0" {
+                if parts.len() == 1 || (parts.len() == 2 && parts[1] == "0") {
                     break;
                 }
             }
@@ -34,15 +36,31 @@ fn main() {
                     let cmd = parts[1];
 
                     if BUILTINS.contains(&cmd) {
-                        println!("{} is a shell builtin", cmd);
+                        println!("{cmd} is a shell builtin");
                     } else {
-                        println!("{}: not found", cmd);
+                        let path = env::var("PATH").unwrap_or_default();
+                        let mut found = false;
+
+                        for dir in path.split(':') {
+                            let mut candidate = PathBuf::from(dir);
+                            candidate.push(cmd);
+
+                            if candidate.exists() {
+                                println!("{}", candidate.display());
+                                found = true;
+                                break;
+                            }
+                        }
+
+                        if !found {
+                            println!("{cmd}: not found");
+                        }
                     }
                 }
             }
 
             _ => {
-                println!("{}: command not found", command);
+                println!("{command}: command not found");
             }
         }
     }
