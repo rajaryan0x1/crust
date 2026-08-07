@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::fs::metadata;
 use std::process::Command;
 
-const BUILTINS: [&str; 3] = ["type", "echo", "exit"];
+const BUILTINS: [&str; 4] = ["type", "echo", "exit" , "pwd"];
 
 fn find_exe(cmd : &str) ->Option<PathBuf> {
     let path = env::var("PATH").unwrap_or_default();
