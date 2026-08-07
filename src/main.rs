@@ -48,6 +48,9 @@ fn main() {
             "echo" => {
                 println!("{}", parts[1..].join(" "));
             }
+            "pwd" =>{
+                println!("{}" , env::current_dir().unwrap().display());
+            }
 
             "type" => {
 
