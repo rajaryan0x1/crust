@@ -1,11 +1,26 @@
-#[warn(unused_imports)]
 use std::env;
 use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::fs::metadata;
+use std::process::Command;
 
 const BUILTINS: [&str; 3] = ["type", "echo", "exit"];
+
+fn find_exe(cmd : &str) ->Option<PathBuf> {
+    let path = env::var("PATH").unwrap_or_default();
+
+    for dir in path.split(":"){
+        let candidate = PathBuf::from(dir).join(cmd);
+        if let Ok(metadata) = metadata(&candidate) {
+            if metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0) {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
 
 fn main() {
     loop {
@@ -35,40 +50,31 @@ fn main() {
             }
 
             "type" => {
-                if parts.len() == 2 {
-                    let cmd = parts[1];
 
-                    if BUILTINS.contains(&cmd) {
-                        println!("{cmd} is a shell builtin");
-                    } else {
-                        let path = env::var("PATH").unwrap_or_default();
-                        let mut found = false;
-
-                        for dir in path.split(':') {
-                            let mut candidate = PathBuf::from(dir);
-                            candidate.push(cmd);
-
-                            if let Ok(metadata) = metadata(&candidate) {
-                                if metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0) {
-                                    println!("{cmd} is {}", candidate.display());
-                                    found = true;
-                                    break;
-
-                                }
-
-                            }
-
-                        }
-
-                        if !found {
-                            println!("{cmd}: not found");
-                        }
-                    }
+                if parts.len() != 2 {
+                    continue;
+                }
+                let cmd = parts[1];
+                if BUILTINS.contains(&cmd) {
+                    println!("{cmd} is a shell builtin");
+                } else if let Some(path) = find_exe(cmd) {
+                    println!("{cmd} is {}" , path.display());
+                } else {
+                    println!("{cmd}: not found");
                 }
             }
 
             _ => {
-                println!("{command}: command not found");
+                let cmd = parts[0];
+
+                if let Some(path) = find_exe(cmd) {
+                    Command::new(&path)
+                        .args(&parts[1..])
+                        .status()
+                        .expect("failed to execute the command");
+                } else {
+                    println!("{cmd}: command not found");
+                }
             }
         }
     }
