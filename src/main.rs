@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::fs::metadata;
 use std::process::Command;
 
-const BUILTINS: [&str; 4] = ["type", "echo", "exit" , "pwd"];
+const BUILTINS: [&str; 5] = ["type", "echo", "exit" , "pwd", "cd"];
 
 fn find_exe(cmd : &str) ->Option<PathBuf> {
     let path = env::var("PATH").unwrap_or_default();
@@ -50,6 +50,19 @@ fn main() {
             }
             "pwd" =>{
                 println!("{}" , env::current_dir().unwrap().display());
+            }
+
+            "cd" => {
+                let path = if parts.len() < 2 || parts[1] == "~" {
+                    env::var("HOME").unwrap()
+                } else {
+                    parts[1].to_string()
+                };
+
+                if let Err(_) = env::set_current_dir(&path) {
+                    println!("cd: {}: No such file or directory", path);
+                }
+
             }
 
             "type" => {
