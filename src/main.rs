@@ -66,9 +66,9 @@ fn main() {
 
             _ => {
                 let cmd = parts[0];
-
-                if let Some(path) = find_exe(cmd) {
-                    Command::new(path)
+                if find_exe(cmd).is_some() {
+                //if let Some(path) = find_exe(cmd) {
+                    Command::new(cmd)
                         .args(&parts[1..])
                         .status()
                         .expect("failed to execute the command");
