@@ -10,21 +10,29 @@ const BUILTINS: [&str; 5] = ["type", "echo", "exit", "pwd", "cd"];
 fn parse_command(command: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
-    let mut in_quotes = false;
+
+    let mut in_single_quotes = false;
+    let mut in_double_quotes = false;
 
     for c in command.chars() {
         match c {
-            '\'' => {
-                in_quotes = !in_quotes;
+            '\'' if !in_double_quotes => {
+                in_single_quotes = !in_single_quotes;
             }
 
-            ' ' if !in_quotes => {
+            '"' if !in_single_quotes => {
+                in_double_quotes = !in_double_quotes;
+            }
+
+            ' ' if !in_single_quotes && !in_double_quotes => {
                 if !current.is_empty() {
                     parts.push(std::mem::take(&mut current));
                 }
             }
 
-            _ => current.push(c),
+            _ => {
+                current.push(c);
+            }
         }
     }
 
@@ -34,7 +42,6 @@ fn parse_command(command: &str) -> Vec<String> {
 
     parts
 }
-
 
 
 fn find_exe(cmd: &str) -> Option<PathBuf> {
