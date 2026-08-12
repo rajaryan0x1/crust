@@ -13,9 +13,20 @@ fn parse_command(command: &str) -> Vec<String> {
 
     let mut in_single_quotes = false;
     let mut in_double_quotes = false;
+    let mut escaped = false;
 
     for c in command.chars() {
+        if escaped {
+            current.push(c);
+            escaped = false;
+            continue;
+        }
+
         match c {
+            '\\' if !in_single_quotes => {
+                escaped = true;
+            }
+
             '\'' if !in_double_quotes => {
                 in_single_quotes = !in_single_quotes;
             }
@@ -34,6 +45,11 @@ fn parse_command(command: &str) -> Vec<String> {
                 current.push(c);
             }
         }
+    }
+
+    
+    if escaped {
+        current.push('\\');
     }
 
     if !current.is_empty() {
