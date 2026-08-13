@@ -1,13 +1,18 @@
 use std::env;
-use std::fs::metadata;
+use std::fs::{OpenOptions, metadata};
 use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+struct ParsedCommand {
+    args: Vec<String>,
+    stdout_file: Option<String>,
+}
 
 const BUILTINS: [&str; 5] = ["type", "echo", "exit", "pwd", "cd"];
 
-fn parse_command(command: &str) -> Vec<String> {
+fn parse_command(command: &str) -> ParsedCommand {
     let mut parts = Vec::new();
     let mut current = String::new();
 
@@ -35,7 +40,7 @@ fn parse_command(command: &str) -> Vec<String> {
                 in_double_quotes = !in_double_quotes;
             }
 
-            ' ' if !in_single_quotes && !in_double_quotes => {
+            c if c.is_whitespace() && !in_single_quotes && !in_double_quotes => {
                 if !current.is_empty() {
                     parts.push(std::mem::take(&mut current));
                 }
@@ -47,7 +52,6 @@ fn parse_command(command: &str) -> Vec<String> {
         }
     }
 
-    
     if escaped {
         current.push('\\');
     }
@@ -56,15 +60,37 @@ fn parse_command(command: &str) -> Vec<String> {
         parts.push(current);
     }
 
-    parts
-}
+    let mut args = Vec::new();
+    let mut stdout_file = None;
 
+    let mut i = 0;
+
+    while i < parts.len() {
+        match parts[i].as_str() {
+            ">" | "1>" => {
+                if i + 1 < parts.len() {
+                    stdout_file = Some(parts[i + 1].clone());
+                    i += 2;
+                    continue;
+                }
+            }
+
+            _ => {}
+        }
+
+        args.push(parts[i].clone());
+        i += 1;
+    }
+
+    ParsedCommand { args, stdout_file }
+}
 
 fn find_exe(cmd: &str) -> Option<PathBuf> {
     let path = env::var("PATH").unwrap_or_default();
 
-    for dir in path.split(":") {
+    for dir in path.split(':') {
         let candidate = PathBuf::from(dir).join(cmd);
+
         if let Ok(metadata) = metadata(&candidate) {
             if metadata.is_file() && (metadata.permissions().mode() & 0o111 != 0) {
                 return Some(candidate);
@@ -81,7 +107,10 @@ fn main() {
         io::stdout().flush().unwrap();
 
         let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
+
+        if io::stdin().read_line(&mut input).unwrap() == 0 {
+            break;
+        }
 
         let command = input.trim();
 
@@ -91,25 +120,30 @@ fn main() {
 
         let parts = parse_command(command);
 
-        match parts[0].as_str() {
+        if parts.args.is_empty() {
+            continue;
+        }
+
+        match parts.args[0].as_str() {
             "exit" => {
-                if parts.len() == 1 || (parts.len() == 2 && parts[1] == "0") {
+                if parts.args.len() == 1 || (parts.args.len() == 2 && parts.args[1] == "0") {
                     break;
                 }
             }
 
             "echo" => {
-                println!("{}", parts[1..].join(" "));
+                println!("{}", parts.args[1..].join(" "));
             }
+
             "pwd" => {
                 println!("{}", env::current_dir().unwrap().display());
             }
 
             "cd" => {
-                let path = if parts.len() < 2 || parts[1] == "~" {
+                let path = if parts.args.len() < 2 || parts.args[1] == "~" {
                     env::var("HOME").unwrap()
                 } else {
-                    parts[1].to_string()
+                    parts.args[1].to_string()
                 };
 
                 if let Err(_) = env::set_current_dir(&path) {
@@ -118,10 +152,12 @@ fn main() {
             }
 
             "type" => {
-                if parts.len() != 2 {
+                if parts.args.len() != 2 {
                     continue;
                 }
-                let cmd = parts[1].as_str();
+
+                let cmd = parts.args[1].as_str();
+
                 if BUILTINS.contains(&cmd) {
                     println!("{cmd} is a shell builtin");
                 } else if let Some(path) = find_exe(cmd) {
@@ -132,13 +168,27 @@ fn main() {
             }
 
             _ => {
-                let cmd = parts[0].as_str();
-                if find_exe(cmd).is_some() {
-                    //if let Some(path) = find_exe(cmd) {
-                    Command::new(cmd)
-                        .args(parts.iter().skip(1))
-                        .status()
-                        .expect("failed to execute the command");
+                let cmd = parts.args[0].as_str();
+
+                if let Some(path) = find_exe(cmd) {
+                    let mut command = Command::new(path);
+
+                    command.args(parts.args.iter().skip(1));
+
+                    // Redirect stdout if > or 1> was specified.
+                    if let Some(output_file) = parts.stdout_file {
+                        let file = OpenOptions::new()
+                            .write(true)
+                            .create(true)
+                            .truncate(true)
+                            .open(output_file)
+                            .expect("failed to open output file");
+
+                        command.stdout(Stdio::from(file));
+                    }
+
+                    // stderr is NOT redirected.
+                    command.status().expect("failed to execute the command");
                 } else {
                     println!("{cmd}: command not found");
                 }
