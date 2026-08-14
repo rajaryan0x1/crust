@@ -243,7 +243,6 @@ fn main() {
 
         if find_exe(cmd).is_some() {
             let mut command = Command::new(cmd);
-        }
 
             command.args(parts.args.iter().skip(1));
 
