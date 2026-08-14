@@ -1,7 +1,8 @@
 use std::env;
-use std::fs::{OpenOptions, metadata};
+use std::fs::{metadata, OpenOptions};
 use std::io::{self, Write};
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -11,6 +12,12 @@ struct ParsedCommand {
 }
 
 const BUILTINS: [&str; 5] = ["type", "echo", "exit", "pwd", "cd"];
+
+unsafe extern "C" {
+    fn dup(fd: i32) -> i32;
+    fn dup2(oldfd: i32, newfd: i32) -> i32;
+    fn close(fd: i32) -> i32;
+}
 
 fn parse_command(command: &str) -> ParsedCommand {
     let mut parts = Vec::new();
@@ -101,6 +108,102 @@ fn find_exe(cmd: &str) -> Option<PathBuf> {
     None
 }
 
+fn redirect_stdout<F>(output_file: &str, func: F)
+where
+    F: FnOnce(),
+{
+    let file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(output_file)
+        .expect("failed to open output file");
+
+    let saved_stdout = unsafe { dup(1) };
+
+    if saved_stdout == -1 {
+        panic!("failed to duplicate stdout");
+    }
+
+    let result = unsafe { dup2(file.as_raw_fd(), 1) };
+
+    if result == -1 {
+        panic!("failed to redirect stdout");
+    }
+
+    func();
+
+    io::stdout().flush().unwrap();
+
+    let result = unsafe { dup2(saved_stdout, 1) };
+
+    if result == -1 {
+        panic!("failed to restore stdout");
+    }
+
+    unsafe {
+        close(saved_stdout);
+    }
+}
+
+fn execute_builtin(parts: &ParsedCommand) -> bool {
+    match parts.args[0].as_str() {
+        "exit" => {
+            if parts.args.len() == 1
+                || (parts.args.len() == 2 && parts.args[1] == "0")
+            {
+                std::process::exit(0);
+            }
+
+            true
+        }
+
+        "echo" => {
+            println!("{}", parts.args[1..].join(" "));
+            true
+        }
+
+        "pwd" => {
+            println!("{}", env::current_dir().unwrap().display());
+            true
+        }
+
+        "cd" => {
+            let path = if parts.args.len() < 2 || parts.args[1] == "~" {
+                env::var("HOME").unwrap()
+            } else {
+                parts.args[1].to_string()
+            };
+
+            if let Err(_) = env::set_current_dir(&path) {
+                println!("cd: {}: No such file or directory", path);
+            }
+
+            true
+        }
+
+        "type" => {
+            if parts.args.len() != 2 {
+                return true;
+            }
+
+            let cmd = parts.args[1].as_str();
+
+            if BUILTINS.contains(&cmd) {
+                println!("{cmd} is a shell builtin");
+            } else if let Some(path) = find_exe(cmd) {
+                println!("{cmd} is {}", path.display());
+            } else {
+                println!("{cmd}: not found");
+            }
+
+            true
+        }
+
+        _ => false,
+    }
+}
+
 fn main() {
     loop {
         print!("$ ");
@@ -124,75 +227,41 @@ fn main() {
             continue;
         }
 
-        match parts.args[0].as_str() {
-            "exit" => {
-                if parts.args.len() == 1 || (parts.args.len() == 2 && parts.args[1] == "0") {
-                    break;
-                }
+        if BUILTINS.contains(&parts.args[0].as_str()) {
+            if let Some(output_file) = &parts.stdout_file {
+                redirect_stdout(output_file, || {
+                    execute_builtin(&parts);
+                });
+            } else {
+                execute_builtin(&parts);
             }
 
-            "echo" => {
-                println!("{}", parts.args[1..].join(" "));
+            continue;
+        }
+
+        let cmd = parts.args[0].as_str();
+
+        if let Some(path) = find_exe(cmd) {
+            let mut command = Command::new(path);
+
+            command.args(parts.args.iter().skip(1));
+
+            if let Some(output_file) = parts.stdout_file {
+                let file = OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(output_file)
+                    .expect("failed to open output file");
+
+                command.stdout(Stdio::from(file));
             }
 
-            "pwd" => {
-                println!("{}", env::current_dir().unwrap().display());
-            }
-
-            "cd" => {
-                let path = if parts.args.len() < 2 || parts.args[1] == "~" {
-                    env::var("HOME").unwrap()
-                } else {
-                    parts.args[1].to_string()
-                };
-
-                if let Err(_) = env::set_current_dir(&path) {
-                    println!("cd: {}: No such file or directory", path);
-                }
-            }
-
-            "type" => {
-                if parts.args.len() != 2 {
-                    continue;
-                }
-
-                let cmd = parts.args[1].as_str();
-
-                if BUILTINS.contains(&cmd) {
-                    println!("{cmd} is a shell builtin");
-                } else if let Some(path) = find_exe(cmd) {
-                    println!("{cmd} is {}", path.display());
-                } else {
-                    println!("{cmd}: not found");
-                }
-            }
-
-            _ => {
-                let cmd = parts.args[0].as_str();
-
-                if let Some(path) = find_exe(cmd) {
-                    let mut command = Command::new(path);
-
-                    command.args(parts.args.iter().skip(1));
-
-                    // Redirect stdout if > or 1> was specified.
-                    if let Some(output_file) = parts.stdout_file {
-                        let file = OpenOptions::new()
-                            .write(true)
-                            .create(true)
-                            .truncate(true)
-                            .open(output_file)
-                            .expect("failed to open output file");
-
-                        command.stdout(Stdio::from(file));
-                    }
-
-                    // stderr is NOT redirected.
-                    command.status().expect("failed to execute the command");
-                } else {
-                    println!("{cmd}: command not found");
-                }
-            }
+            command
+                .status()
+                .expect("failed to execute the command");
+        } else {
+            println!("{cmd}: command not found");
         }
     }
 }
