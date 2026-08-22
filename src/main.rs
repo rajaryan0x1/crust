@@ -1,3 +1,11 @@
+// Todo 
+
+//  Builtin completions 
+// completion with arguments
+// completion with partial arguments
+// executable completions
+
+
 use std::env;
 use std::fs::{metadata, OpenOptions};
 use std::io::{self, Write};
@@ -9,11 +17,15 @@ use std::process::{Command, Stdio};
 struct ParsedCommand {
     args: Vec<String>,
     stdout_file: Option<String>,
+    stdout_append: bool,
     stderr_file: Option<String>,
+    stderr_append: bool,
 }
 
 const BUILTINS: [&str; 5] = ["type", "echo", "exit", "pwd", "cd"];
 
+
+// FFI bindings for dup, dup2, and close
 unsafe extern "C" {
     fn dup(fd: i32) -> i32;
     fn dup2(oldfd: i32, newfd: i32) -> i32;
@@ -70,26 +82,50 @@ fn parse_command(command: &str) -> ParsedCommand {
 
     let mut args = Vec::new();
     let mut stdout_file = None;
+    let mut stdout_append = false;
     let mut stderr_file = None;
+    let mut stderr_append = false;
 
     let mut i = 0;
 
     while i < parts.len() {
         match parts[i].as_str() {
+            // stdout overwrite
             ">" | "1>" => {
                 if i + 1 < parts.len() {
                     stdout_file = Some(parts[i + 1].clone());
+                    stdout_append = false;
                     i += 2;
                     continue;
                 }
             }
 
+            // stdout append
+            ">>" | "1>>" => {
+                if i + 1 < parts.len() {
+                    stdout_file = Some(parts[i + 1].clone());
+                    stdout_append = true;
+                    i += 2;
+                    continue;
+                }
+            }
+
+            // stderr overwrite
             "2>" => {
                 if i + 1 < parts.len() {
+                    stderr_file = Some(parts[i + 1].clone());
+                    stderr_append = false;
+                    i += 2;
+                    continue;
+                }
+            }
 
-                
-                    stderr_file = Some(parts[i+1].clone());
-                    i+=2;
+            // stderr append (easy task cause 2> already implemented so its similar to that)
+            "2>>" => {
+                if i + 1 < parts.len() {
+                    stderr_file = Some(parts[i + 1].clone());
+                    stderr_append = true;
+                    i += 2;
                     continue;
                 }
             }
@@ -101,7 +137,13 @@ fn parse_command(command: &str) -> ParsedCommand {
         i += 1;
     }
 
-    ParsedCommand { args, stdout_file , stderr_file }
+    ParsedCommand {
+        args,
+        stdout_file,
+        stdout_append,
+        stderr_file,
+        stderr_append,
+    }
 }
 
 fn find_exe(cmd: &str) -> Option<PathBuf> {
@@ -120,16 +162,25 @@ fn find_exe(cmd: &str) -> Option<PathBuf> {
     None
 }
 
-fn redirect_stdout<F>(output_file: &str, func: F)
+fn redirect_stdout<F>(output_file: &str, append: bool, func: F)
 where
     F: FnOnce(),
 {
-    let file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(output_file)
-        .expect("failed to open output file");
+    let file = if append {
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(true)
+            .open(output_file)
+            .expect("failed to open output file")
+    } else {
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(output_file)
+            .expect("failed to open output file")
+    };
 
     let saved_stdout = unsafe { dup(1) };
 
@@ -158,52 +209,50 @@ where
     }
 }
 
-fn redirect_stderr<F>(error_file: &str, func: F) 
-where 
+fn redirect_stderr<F>(error_file: &str, append: bool, func: F)
+where
     F: FnOnce(),
 {
-
-    let file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(error_file)
-        .expect("failed to open error_file");
-
-    let saved_stderr = unsafe {
-        dup(2)
+    let file = if append {
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .append(true)
+            .open(error_file)
+            .expect("failed to open error file")
+    } else {
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(error_file)
+            .expect("failed to open error file")
     };
+
+    let saved_stderr = unsafe { dup(2) };
 
     if saved_stderr == -1 {
         panic!("failed to duplicate stderr");
     }
 
-    let result = unsafe {
-        dup2(file.as_raw_fd() , 2)
-    };
-    if result ==-1 {
+    let result = unsafe { dup2(file.as_raw_fd(), 2) };
+
+    if result == -1 {
         panic!("failed to redirect stderr");
     }
 
     func();
 
-    let result = unsafe {
-        dup2(saved_stderr, 2)
-    };
+    let result = unsafe { dup2(saved_stderr, 2) };
 
     if result == -1 {
         panic!("failed to restore stderr");
     }
 
-
     unsafe {
         close(saved_stderr);
     }
-
 }
-
-
-
 
 fn execute_builtin(parts: &ParsedCommand) -> bool {
     match parts.args[0].as_str() {
@@ -286,19 +335,20 @@ fn main() {
             continue;
         }
 
+        // Builtin commands
         if BUILTINS.contains(&parts.args[0].as_str()) {
             if let Some(output_file) = &parts.stdout_file {
-                redirect_stdout(output_file, || {
-                if let Some(error_file) = &parts.stderr_file {
-                    redirect_stderr(error_file, || {
+                redirect_stdout(output_file, parts.stdout_append, || {
+                    if let Some(error_file) = &parts.stderr_file {
+                        redirect_stderr(error_file, parts.stderr_append, || {
+                            execute_builtin(&parts);
+                        });
+                    } else {
                         execute_builtin(&parts);
-                    });
-                }else {
-                    execute_builtin(&parts);
-                }
+                    }
                 });
             } else if let Some(error_file) = &parts.stderr_file {
-                redirect_stderr(error_file, || {
+                redirect_stderr(error_file, parts.stderr_append, || {
                     execute_builtin(&parts);
                 });
             } else {
@@ -307,6 +357,8 @@ fn main() {
 
             continue;
         }
+
+        // External commands
         let cmd = parts.args[0].as_str();
 
         if find_exe(cmd).is_some() {
@@ -314,25 +366,44 @@ fn main() {
 
             command.args(parts.args.iter().skip(1));
 
+            // stdout redirection
             if let Some(output_file) = parts.stdout_file {
-                let file = OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(output_file)
-                    .expect("failed to open output file");
+                let file = if parts.stdout_append {
+                    OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .append(true)
+                        .open(output_file)
+                        .expect("failed to open output file")
+                } else {
+                    OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(output_file)
+                        .expect("failed to open output file")
+                };
 
                 command.stdout(Stdio::from(file));
             }
 
-
+            // stderr redirection
             if let Some(error_file) = parts.stderr_file {
-                let file = OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(error_file)
-                    .expect("failed to open error file");
+                let file = if parts.stderr_append {
+                    OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .append(true)
+                        .open(error_file)
+                        .expect("failed to open error file")
+                } else {
+                    OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .open(error_file)
+                        .expect("failed to open error file")
+                };
 
                 command.stderr(Stdio::from(file));
             }
@@ -345,3 +416,4 @@ fn main() {
         }
     }
 }
+
